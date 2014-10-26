@@ -1,0 +1,12 @@
+{application, ksubrama,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { ksubrama_app, []}},
+  {env, []}
+ ]}.
