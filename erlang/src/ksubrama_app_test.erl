@@ -2,11 +2,11 @@
 -include_lib("eunit/include/eunit.hrl").
 
 
+%% Start our application and all its dependencies.
+%% TODO: Maybe there is a "spec" based testing framework that can help log this stuff better?
 startup_test() ->
-	% TODO: There has to be an automatic way to launch all the dependent applications just like
-	% the functionality that the repl provides.  Maybe?
-	ok = application:start(cowlib),
-	ok = application:start(ranch),
-	ok = application:start(cowboy),
-	ok = application:start(ksubrama),
-	?assertNot(undefined == whereis(ksubrama_sup)).
+	{ok, Started} = application:ensure_all_started(ksubrama),
+	?assertNot(undefined == whereis(ksubrama_sup)),
+	lists:foreach(fun(App) ->
+			ok = application:stop(App)
+		end, Started).
