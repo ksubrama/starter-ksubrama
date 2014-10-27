@@ -1,12 +1,12 @@
-{application, ksubrama,
- [
-  {description, ""},
-  {vsn, "1"},
-  {registered, []},
-  {applications, [
-                  kernel,
-                  stdlib
-                 ]},
-  {mod, { ksubrama_app, []}},
-  {env, []}
- ]}.
+{application, ksubrama, [
+	{description, "Kartik Cating-Subramanian starter project."},
+	{vsn, "1"},
+	{registered, [ksubrama_sup]},
+	{applications, [
+		kernel,
+		stdlib,
+		cowboy
+	]},
+	{mod, { ksubrama_app, []}},
+	{env, []}
+]}.

@@ -10,7 +10,21 @@
 %% ===================================================================
 
 start(_StartType, _StartArgs) ->
-    ksubrama_sup:start_link().
+	% TODO: Come back and add constraint handlers here if we need to
+	% pre-validate our user/group names in some way.
+	RouteList = [
+		{"/users/[:userid]", users_handler, []},
+		{"/groups/[:group]", groups_handler, []}
+	],
+	Dispatch = cowboy_router:compile([{'_', RouteList}]),
+	% TODO: Learn what the default "max" values are and how cowboy offers
+	% DOS protection.
+	% TODO: Why do the examples want me to throw away the supervisor pid
+	% returned here?  That seems strange...
+	{ok, _} = cowboy:start_http(http, 100, [{port, 8080}], [
+		{env, [{dispatch, Dispatch}]}
+	]),
+	ksubrama_sup:start_link().
 
 stop(_State) ->
-    ok.
+	ok.
