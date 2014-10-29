@@ -21,6 +21,9 @@ start(_StartType, _StartArgs) ->
 	% DOS protection.
 	% TODO: Why do the examples want me to throw away the supervisor pid
 	% returned here?  That seems strange...
+	% TODO: Figure out how argument passing works here - maybe there are
+	% deployment configuration options or something?  I haven't figured out how
+	% command line arguments work here.
 	{ok, _} = cowboy:start_http(http, 100, [{port, 8080}], [
 		{env, [{dispatch, Dispatch}]}
 	]),

@@ -88,7 +88,7 @@ delete_resource(Req, State) ->
 
 resource_exists(Req, State) ->
 	%% TODO: Fill with logic.
-	{false, Req, State}.
+	{true, Req, State}.
 
 user_from_json(Req, State) ->
 	%% TODO: Fill with logic.
