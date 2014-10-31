@@ -45,54 +45,65 @@
 %% some table on disk and I'd prefer having sensible, normalized data along with
 %% places where they are explicitly denormalized instead of implicitly putting that
 %% stuff wherever and worrying about data consistency later.
+%%
+%% TODO: Why is dialyzer not catching any issues with return types?  Why is it not
+%% following through gen_server:call?
 
 -type ks_user() :: {binary(), binary(), binary(), binary()}.
 -type ks_group() :: {binary(), [binary()]}.
 -export_type([ks_user/0, ks_group/0]).
+-type ks_state() :: {ets:tid(), ets:tid(), ets:tid(), ets:tid()}.
 
 %% Public interface.
 
+-spec start_link ([]) -> {ok, pid()}.
 start_link([]) ->
 	{ok, _Pid} = gen_server:start_link({local, ?MODULE}, [], []).
 
--spec create_user (pid(), ks_user()) -> ok | conflict | invalid_group.
+-spec create_user (pid(), ks_user()) -> ok | conflict | invalid_groups.
 create_user(Pid, {UserId, FirstName, LastName, Groups}) ->
 	gen_server:call(Pid, {update_user, create, {UserId, FirstName, LastName}, Groups}).
 
--spec update_user (pid(), ks_user()) -> ok | conflict | invalid_group.
+-spec update_user (pid(), ks_user()) -> ok | conflict | invalid_groups.
 update_user(Pid, {UserId, FirstName, LastName, Groups}) ->
 	gen_server:call(Pid, {update_user, update, {UserId, FirstName, LastName}, Groups}).
 
+-spec get_user (pid(), binary()) -> ks_user() | notfound.
 get_user(Pid, UserId) ->
-	case get_server:call(Pid, {get_user, full, UserId}) of
+	case gen_server:call(Pid, {get_user, full, UserId}) of
 		{{UserId, FirstName, LastName}, Groups} -> {UserId, FirstName, LastName, Groups};
 		Else -> Else
 	end.
 
+-spec user_exists (pid(), binary()) -> boolean().
 user_exists(Pid, UserId) ->
-	get_server:call(Pid, {get_user, check, UserId}).
+	gen_server:call(Pid, {get_user, check, UserId}).
 
+-spec create_group (pid(), ks_group()) -> ok | conflict | invalid_users.
 create_group(Pid, {Group, UserIds}) ->
 	gen_server:call(Pid, {update_group, create, Group, UserIds}).
 
+-spec update_group (pid(), ks_group()) -> ok | conflict | invalid_users.
 update_group(Pid, {Group, UserIds}) ->
 	gen_server:call(Pid, {update_group, update, Group, UserIds}).
 
+-spec get_group (pid(), binary()) -> ks_group() | notfound.
 get_group(Pid, Group) ->
-	case get_server:call(Pid, {get_group, full, Group}) of
+	case gen_server:call(Pid, {get_group, full, Group}) of
 		{UserIds} -> {Group, UserIds};
 		Else -> Else
 	end.
 
+-spec group_exists (pid(), binary()) -> boolean().
 group_exists(Pid, Group) ->
-	get_server:call(Pid, {get_group, check, Group}).
+	gen_server:call(Pid, {get_group, check, Group}).
 
 
 %% Internal methods and gen_server callbacks.
 
 %% Create linked ETS tables.  If we crash, they go away.
 %% TODO:  Maybe have the supervisor control the tables?
--spec init_tables () -> {ets:tid(), ets:tid(), ets:tid(), ets:tid()}.
+-spec init_tables () -> ks_state().
 init_tables() ->
 	%% {userid, first name, last name}
 	UserTable = ets:new(users, [set]),
@@ -105,22 +116,23 @@ init_tables() ->
 	{UserTable, GroupTable, MapGroupToUser, MapUserToGroup}.
 
 
+-spec init ([]) -> {ok, ks_state()}.
 init([]) ->
 	State = init_tables(),
 	{ok, State}.
 
 
-% TODO string?  Binary string?  Check this.
 -spec add_membership (ets:tid(), ets:tid(), [binary()], [binary()]) -> true.
 add_membership(GtU, UtG, Groups, UserIds) ->
 	Memberships = [{Group, UserId} || Group <- Groups, UserId <- UserIds],
 	true = ets:insert(UtG, Memberships),
 	true = ets:insert(GtU, Memberships).
 
+
 internal_update_user(Flavor, User = {UserId, _}, Groups, {UserTable, GroupTable, GtU, UtG}) ->
 	% A real storage system would do this "all" in parallel and decided whether to seek or
 	% scan based on programmer guidance/statistics.
-	case list:all(fun(Group) -> ets:member(GroupTable, Group) end, Groups) of
+	case lists:all(fun(Group) -> ets:member(GroupTable, Group) end, Groups) of
 		true ->
 			Good = case Flavor of
 				create ->
@@ -150,18 +162,13 @@ internal_get_user(full, UserId, {UserTable, _, _, UtG}) ->
 		% and we key off of userid.
 	end;
 internal_get_user(check, UserId, {UserTable, _, _, _}) ->
-	case ets:member(UserTable, UserId) of
-		true ->
-			found;
-		false ->
-			notfound
-	end.
+	ets:member(UserTable, UserId).
 
 
 internal_update_group(Flavor, Group, UserIds, {UserTable, GroupTable, GtU, UtG}) ->
 	% A real storage system would do this "all" in parallel and decided whether to seek or
 	% scan based on programmer guidance/statistics.
-	case list:all(fun(UserId) -> ets:member(UserTable, UserId) end, UserIds) of
+	case lists:all(fun(UserId) -> ets:member(UserTable, UserId) end, UserIds) of
 		true ->
 			Good = case Flavor of
 				create ->
@@ -182,15 +189,17 @@ internal_update_group(Flavor, Group, UserIds, {UserTable, GroupTable, GtU, UtG})
 
 internal_get_group(Flavor, Group, {_, GroupTable, GtU, _}) ->
 	case {Flavor, ets:member(GroupTable, Group)} of
-		{_, false} ->
+		{check, Found} ->
+			Found;
+		{full, false} ->
 			notfound;
-		{check, true} ->
-			found;
 		{full, true} ->
 			{ets:match(GtU, {Group, "$1"})}
 	end.
 
 
+%% TODO: Improve spec.
+-spec handle_call(_, _, ks_state()) -> ({reply, _, ks_state()} | {stop, unknown_call, ks_state()}).
 handle_call(Req, _From, State) ->
 	% We're one process...  so it's all serialized anyway.  Just do the work,
 	case Req of
@@ -206,10 +215,13 @@ handle_call(Req, _From, State) ->
 	end.
 
 
+%% TODO: Improve spec.
+-spec handle_cast(_, ks_state()) -> {stop, unknown_call, ks_state()}.
 handle_cast(_Req, State) -> {stop, unknown_call, State}.
 
 %% Trace and the ingore bad calls.
 %% TODO: How does tracing work?
+-spec handle_info(_, ks_state()) -> {noreply, ks_state()}.
 handle_info(Info, State) ->
 	io:format("Unknown call to storage process: ~p~n", [Info]),
 	{noreply, State}.
@@ -220,11 +232,13 @@ handle_info(Info, State) ->
 %% possible so that you validate that scenario and design it solidly.  If you
 %% are crash resistant...  then why do you need clean shutdown?  Just call
 %% kill to exit.
+-spec terminate(_, ks_state()) -> _.
 terminate(Reason, _State) ->
 	io:format("Storage process terminating: ~p~n", [Reason]).
 
 
 %% Not really worried about upgrades now.
 %% TODO: Figure out what I need to do.
+-spec code_change(_, ks_state(), _) -> {ok, ks_state()}.
 code_change(_, State, _) ->
 	{ok, State}.

@@ -15,7 +15,7 @@
 %% API functions
 %% ===================================================================
 
--spec start_link() -> {ok, pid()}.
+-spec start_link () -> {ok, pid()}.
 start_link() ->
 	{ok, _Pid} = supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
@@ -23,6 +23,7 @@ start_link() ->
 %% Supervisor callbacks
 %% ===================================================================
 
+-spec init ([]) -> {ok, {{supervisor:strategy(), non_neg_integer(), pos_integer()}, [supervisor:child_spec()]}}.
 init([]) ->
 	{
 		ok,

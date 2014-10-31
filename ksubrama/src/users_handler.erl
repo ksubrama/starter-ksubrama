@@ -59,7 +59,6 @@
 %% versioning prefix because it's cheap and the alternative (figuring out you
 %% need it later) is gigantic pain in the ass.
 
-
 init({tcp, http}, _Req, _Opts) ->
 	{upgrade, protocol, cowboy_rest}.
 
