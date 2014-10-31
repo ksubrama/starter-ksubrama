@@ -2,9 +2,9 @@
 
 -behavior(gen_server).
 
--export([start_link/1]).
--export([create_user/2, update_user/2, get_user/2, user_exists/2]).
--export([create_group/2, update_group/2, get_group/2, group_exists/2]).
+-export([start_link/0]).
+-export([create_user/2, update_user/2, get_user/2, user_exists/2, delete_user/2]).
+-export([create_group/2, update_group/2, get_group/2, group_exists/2, delete_group/2]).
 
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
@@ -22,12 +22,8 @@
 %% Basic design:
 %%
 %% User table:
-%% userid -> first name, last name
+%% userid -> first name, last name, live
 %% Holding only the normalized data.
-%%
-%% Group table:
-%% group
-%% It's just a set to verify existence of the group.
 %%
 %% Group membership bags:
 %% userid -> group
@@ -52,21 +48,29 @@
 -type ks_user() :: {binary(), binary(), binary(), [binary()]}.
 -type ks_group() :: {binary(), [binary()]}.
 -export_type([ks_user/0, ks_group/0]).
--type ks_state() :: {ets:tid(), ets:tid(), ets:tid(), ets:tid()}.
+-type ks_state() :: {ets:tid(), ets:tid(), ets:tid()}.
+-type ks_iuser() :: {binary(), binary(), binary()}.
+
 
 %% Public interface.
 
--spec start_link ([]) -> {ok, pid()}.
-start_link([]) ->
-	{ok, _Pid} = gen_server:start_link(?MODULE, [], []).
+start_link() ->
+	io:format("Starting storage subsystem.~n"),
+	gen_server:start_link(?MODULE, [], []).
 
--spec create_user (pid(), ks_user()) -> ok | conflict | invalid_groups.
+
+%% User CRUD.
+-spec create_user (pid(), ks_user()) -> ok | conflict.
 create_user(Pid, {UserId, FirstName, LastName, Groups}) ->
 	gen_server:call(Pid, {update_user, create, {UserId, FirstName, LastName}, Groups}).
 
--spec update_user (pid(), ks_user()) -> ok | conflict | invalid_groups.
+-spec update_user (pid(), ks_user()) -> ok | conflict.
 update_user(Pid, {UserId, FirstName, LastName, Groups}) ->
 	gen_server:call(Pid, {update_user, update, {UserId, FirstName, LastName}, Groups}).
+
+-spec delete_user (pid(), binary()) -> ok | notfound.
+delete_user(Pid, UserId) ->
+	gen_server:call(Pid, {update_user, delete, {UserId, <<>>, <<>>}, []}).
 
 -spec get_user (pid(), binary()) -> ks_user() | notfound.
 get_user(Pid, UserId) ->
@@ -79,13 +83,19 @@ get_user(Pid, UserId) ->
 user_exists(Pid, UserId) ->
 	gen_server:call(Pid, {get_user, check, UserId}).
 
--spec create_group (pid(), ks_group()) -> ok | conflict | invalid_users.
+
+%% Group CRUD.
+-spec create_group (pid(), ks_group()) -> ok | conflict | invalid_user.
 create_group(Pid, {Group, UserIds}) ->
 	gen_server:call(Pid, {update_group, create, Group, UserIds}).
 
--spec update_group (pid(), ks_group()) -> ok | conflict | invalid_users.
+-spec update_group (pid(), ks_group()) -> ok | invalid_user.
 update_group(Pid, {Group, UserIds}) ->
 	gen_server:call(Pid, {update_group, update, Group, UserIds}).
+
+-spec delete_group (pid(), binary()) -> ok | invalid_user | notfound.
+delete_group(Pid, Group) ->
+	gen_server:call(Pid, {update_group, delete, Group, []}).
 
 -spec get_group (pid(), binary()) -> ks_group() | notfound.
 get_group(Pid, Group) ->
@@ -101,25 +111,36 @@ group_exists(Pid, Group) ->
 
 %% Internal methods and gen_server callbacks.
 
+-define(MAP_GROUP_COL, 1).
+-define(MAP_USER_COL, 2).
+-define(USER_ALIVE_COL, 4).
+
 %% Create linked ETS tables.  If we crash, they go away.
 %% TODO:  Maybe have the supervisor control the tables?
 -spec init_tables () -> ks_state().
 init_tables() ->
-	%% {userid, first name, last name}
+	%% {userid, first name, last name, live}
 	UserTable = ets:new(users, [set]),
-	%% {group}
-	GroupTable = ets:new(groups, [set]),
 	%% {group, userid}
 	MapGroupToUser = ets:new(map_group_to_user, [bag]),
 	%% {group, userid}
-	MapUserToGroup = ets:new(map_user_to_group, [bag, {keypos, 2}]),
-	{UserTable, GroupTable, MapGroupToUser, MapUserToGroup}.
-
+	MapUserToGroup = ets:new(map_user_to_group, [bag, {keypos, ?MAP_USER_COL}]),
+	{UserTable, MapGroupToUser, MapUserToGroup}.
 
 -spec init ([]) -> {ok, ks_state()}.
 init([]) ->
 	State = init_tables(),
 	{ok, State}.
+
+
+-spec maybe_lookup(ets:tid(), term(), pos_integer()) -> [term()].
+maybe_lookup(Tab, Key, Pos) ->
+	try
+		ets:lookup_element(Tab, Key, Pos)
+	catch
+		error:badarg ->
+			[]
+	end.
 
 
 -spec add_membership (ets:tid(), ets:tid(), [binary()], [binary()]) -> true.
@@ -129,93 +150,145 @@ add_membership(GtU, UtG, Groups, UserIds) ->
 	true = ets:insert(GtU, Memberships).
 
 
-internal_update_user(Flavor, User = {UserId, _}, Groups, {UserTable, GroupTable, GtU, UtG}) ->
-	% A real storage system would do this "all" in parallel and decided whether to seek or
-	% scan based on programmer guidance/statistics.
-	case lists:all(fun(Group) -> ets:member(GroupTable, Group) end, Groups) of
-		true ->
-			Good = case Flavor of
-				create ->
-					ets:insert_new(UserTable, User);
-				update ->
-					ets:insert(UserTable, User)
-			end,
-			if Good ->
-					add_membership(GtU, UtG, [UserId], Groups),
-					ok;
-				true ->
-					conflict
-			end;
-		false ->
-			invalid_groups
+-spec remove_membership (ets:tid(), ets:tid(), [binary()], [binary()]) -> true.
+remove_membership(GtU, UtG, Groups, UserIds) ->
+	lists:foreach(
+		fun({Group, UserId}) ->
+			true = ets:delete_object(UtG, {Group, UserId}),
+			true = ets:delete_object(GtU, {Group, UserId})
+		end,
+		[{Group, UserId} || Group <- Groups, UserId <- UserIds]),
+	true.
+
+
+%% Reset the membership attributes of a particular group to the specified user.
+-spec set_group_membership (ets:tid(), ets:tid(), binary(), [binary()]) -> true.
+set_group_membership(GtU, UtG, Group, UserIds) ->
+	New = sets:from_list(UserIds),
+	Old = sets:from_list(maybe_lookup(GtU, Group, ?MAP_USER_COL)),
+	ToAdd = sets:to_list(sets:subtract(New, Old)),
+	ToRemove = sets:to_list(sets:subtract(Old, New)),
+	true = add_membership(GtU, UtG, [Group], ToAdd),
+	true = remove_membership(GtU, UtG, [Group], ToRemove).
+
+
+%% Reset the membership attributes of a particular user to the specified groups.
+-spec set_user_membership (ets:tid(), ets:tid(), [binary()], binary()) -> true.
+set_user_membership(GtU, UtG, Groups, UserId) ->
+	New = sets:from_list(Groups),
+	Old = sets:from_list(maybe_lookup(UtG, UserId, ?MAP_GROUP_COL)),
+	ToAdd = sets:to_list(sets:subtract(New, Old)),
+	ToRemove = sets:to_list(sets:subtract(Old, New)),
+	true = add_membership(GtU, UtG, ToAdd, [UserId]),
+	true = remove_membership(GtU, UtG, ToRemove, [UserId]).
+
+
+-spec ks_update_user
+	(create | update, ks_iuser(), [binary()], ks_state()) -> ok | conflict;
+	(delete, ks_iuser(), [binary()], ks_state()) -> ok | notfound.
+ks_update_user(Flavor, {UserId, FirstName, LastName}, Groups, {UserTable, GtU, UtG}) ->
+	case {Flavor, maybe_lookup(UserTable, UserId, ?USER_ALIVE_COL)} of
+		{create, []} ->
+			% Insertions *only* accept pristine state.
+			ets:insert_new(UserTable, {UserId, FirstName, LastName, alive}),
+			add_membership(GtU, UtG, Groups, [UserId]), ok;
+		{create, _} ->
+			conflict;
+		{update, [dead]}  ->
+			conflict;
+		{update, _} ->
+			% Updating an existing but live user succeeds.
+			ets:insert(UserTable, {UserId, FirstName, LastName, alive}),
+			set_user_membership(GtU, UtG, Groups, UserId), ok;
+		{delete, [alive]} ->
+			ets:insert(UserTable, {UserId, FirstName, LastName, dead}),
+			set_user_membership(GtU, UtG, Groups, UserId), ok;
+		{delete, _} ->
+			notfound
 	end.
 
 
-internal_get_user(full, UserId, {UserTable, _, _, UtG}) ->
+-spec ks_get_user
+	(full, binary(), ks_state()) -> ks_user() | notfound;
+	(check, binary(), ks_state()) -> boolean().
+ks_get_user(full, UserId, {UserTable, _, UtG}) ->
 	case ets:lookup(UserTable, UserId) of
+		[{UserId, FirstName, LastName, alive}] ->
+			Groups = maybe_lookup(UtG, UserId, ?MAP_GROUP_COL),
+			{{UserId, FirstName, LastName}, Groups};
+		_ ->
+			notfound
+	end;
+ks_get_user(check, UserId, {UserTable, _, _}) ->
+	% There has to be an easier way to convert a pattern match to a boolean.  The only
+	% things I can come up with feel like hacks.
+	case ets:match(UserTable, {UserId, '_', '_', alive}) of
+		[_] -> true;
+		_ -> false
+	end.
+
+
+-spec ks_update_group
+	(create | update, binary(), [binary()], ks_state()) -> ok | conflict | invalid_user;
+	(delete, binary(), [binary()], ks_state()) -> ok | notfound | invalid_user.
+ks_update_group(Flavor, Group, UserIds, State = {_, GtU, UtG}) ->
+	% A real storage system would do this "all" in parallel and decided whether to seek or
+	% scan based on programmer guidance/statistics.
+	case {
+			lists:all(fun(UserId) -> ks_get_user(check, UserId, State) end, UserIds),
+			ets:member(GtU, Group),
+			Flavor} of
+		{true, false, create} ->
+			add_membership(GtU, UtG, [Group], UserIds), ok;
+		{true, true, create} ->
+			conflict;
+		{true, _, update} ->
+			set_group_membership(GtU, UtG, Group, UserIds), ok;
+		{true, false, delete} ->
+			notfound;
+		{true, true, delete} ->
+			set_group_membership(GtU, UtG, Group, UserIds), ok;
+		{false, _, _} ->
+			invalid_user
+	end.
+
+
+-spec ks_get_group
+	(full, binary(), ks_state()) -> ks_group() | notfound;
+	(check, binary(), ks_state()) -> boolean().
+ks_get_group(full, Group, {_, GtU, _}) ->
+	case maybe_lookup(GtU, Group, ?MAP_USER_COL) of
 		[] ->
 			notfound;
-		[User] ->
-			Groups = ets:match(UtG, {"$1", UserId}),
-			{User, Groups}
-		% Crash if we get more than one user - that's not possible because it's a set
-		% and we key off of userid.
+		UserIds ->
+			{Group, UserIds}
 	end;
-internal_get_user(check, UserId, {UserTable, _, _, _}) ->
-	ets:member(UserTable, UserId).
+ks_get_group(check, Group, {_, GtU, _}) ->
+	ets:member(GtU, Group).
 
 
-internal_update_group(Flavor, Group, UserIds, {UserTable, GroupTable, GtU, UtG}) ->
-	% A real storage system would do this "all" in parallel and decided whether to seek or
-	% scan based on programmer guidance/statistics.
-	case lists:all(fun(UserId) -> ets:member(UserTable, UserId) end, UserIds) of
-		true ->
-			Good = case Flavor of
-				create ->
-					ets:insert_new(GroupTable, {Group});
-				update ->
-					ets:insert(GroupTable, {Group})
-			end,
-			if Good ->
-					add_membership(GtU, UtG, UserIds, [Group]),
-					ok;
-				true ->
-					conflict
-			end;
-		false ->
-			invalid_users
-	end.
-
-
-internal_get_group(Flavor, Group, {_, GroupTable, GtU, _}) ->
-	case {Flavor, ets:member(GroupTable, Group)} of
-		{check, Found} ->
-			Found;
-		{full, false} ->
-			notfound;
-		{full, true} ->
-			{ets:match(GtU, {Group, "$1"})}
-	end.
-
-
-%% TODO: Improve spec.
--spec handle_call(_, _, ks_state()) -> ({reply, _, ks_state()} | {stop, unknown_call, ks_state()}).
+-spec handle_call
+	({update_user, create | update | delete, ks_iuser(), [binary()]}, _, ks_state()) -> {reply, ok | conflict | notfound, ks_state()};
+	({get_user, check | full, binary()}, _, ks_state()) -> {reply, ks_user() | notfound | boolean(), ks_state()};
+	({update_group, create | update | delete, binary(), [binary()]}, _, ks_state()) -> {reply, ok | conflict | notfound | invalid_user, ks_state()};
+	({get_group, check | full, binary()}, _, ks_state()) -> {reply, ks_group() | notfound | boolean(), ks_state()}.
+	% TODO: Fix this when we figure out how to handle overlapping domains or how to represent differences.
+	%(_, _, ks_state()) -> {stop, unknown_call, ks_state()}.
 handle_call(Req, _From, State) ->
 	% We're one process...  so it's all serialized anyway.  Just do the work,
 	case Req of
 		{update_user, Flavor, User, Groups} ->
-			{reply, internal_update_user(Flavor, User, Groups, State), State};
+			{reply, ks_update_user(Flavor, User, Groups, State), State};
 		{get_user, Flavor, UserId} ->
-			{reply, internal_get_user(Flavor, UserId, State), State};
+			{reply, ks_get_user(Flavor, UserId, State), State};
 		{update_group, Flavor, Group, UserIds} ->
-			{reply, internal_update_group(Flavor, Group, UserIds, State), State};
+			{reply, ks_update_group(Flavor, Group, UserIds, State), State};
 		{get_group, Flavor, Group} ->
-			{reply, internal_get_group(Flavor, Group, State), State};
+			{reply, ks_get_group(Flavor, Group, State), State};
 		_ -> {stop, unknown_call, State}
 	end.
 
 
-%% TODO: Improve spec.
 -spec handle_cast(_, ks_state()) -> {stop, unknown_call, ks_state()}.
 handle_cast(_Req, State) -> {stop, unknown_call, State}.
 

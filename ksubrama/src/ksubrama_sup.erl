@@ -15,9 +15,8 @@
 %% API functions
 %% ===================================================================
 
--spec start_link () -> {ok, pid()}.
 start_link() ->
-	{ok, _Pid} = supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+	supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 %% ===================================================================
 %% Supervisor callbacks
@@ -29,7 +28,7 @@ init([]) ->
 		ok,
 		{
 			{one_for_one, 5, 10},
-		 	[?CHILD(storage, worker)]
+		 	[?CHILD(store, worker)]
 		}
 	}.
 
