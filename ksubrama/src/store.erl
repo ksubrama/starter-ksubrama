@@ -49,7 +49,7 @@
 %% TODO: Why is dialyzer not catching any issues with return types?  Why is it not
 %% following through gen_server:call?
 
--type ks_user() :: {binary(), binary(), binary(), binary()}.
+-type ks_user() :: {binary(), binary(), binary(), [binary()]}.
 -type ks_group() :: {binary(), [binary()]}.
 -export_type([ks_user/0, ks_group/0]).
 -type ks_state() :: {ets:tid(), ets:tid(), ets:tid(), ets:tid()}.
@@ -58,7 +58,7 @@
 
 -spec start_link ([]) -> {ok, pid()}.
 start_link([]) ->
-	{ok, _Pid} = gen_server:start_link({local, ?MODULE}, [], []).
+	{ok, _Pid} = gen_server:start_link(?MODULE, [], []).
 
 -spec create_user (pid(), ks_user()) -> ok | conflict | invalid_groups.
 create_user(Pid, {UserId, FirstName, LastName, Groups}) ->
