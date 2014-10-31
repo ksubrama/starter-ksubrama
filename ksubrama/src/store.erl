@@ -152,12 +152,12 @@ add_membership(GtU, UtG, Groups, UserIds) ->
 
 -spec remove_membership (ets:tid(), ets:tid(), [binary()], [binary()]) -> true.
 remove_membership(GtU, UtG, Groups, UserIds) ->
+	Memberships = [{Group, UserId} || Group <- Groups, UserId <- UserIds],
 	lists:foreach(
 		fun({Group, UserId}) ->
 			true = ets:delete_object(UtG, {Group, UserId}),
 			true = ets:delete_object(GtU, {Group, UserId})
-		end,
-		[{Group, UserId} || Group <- Groups, UserId <- UserIds]),
+		end, Memberships),
 	true.
 
 
@@ -194,13 +194,13 @@ ks_update_user(Flavor, {UserId, FirstName, LastName}, Groups, {UserTable, GtU, U
 			add_membership(GtU, UtG, Groups, [UserId]), ok;
 		{create, _} ->
 			conflict;
-		{update, [dead]}  ->
+		{update, dead}  ->
 			conflict;
 		{update, _} ->
 			% Updating an existing but live user succeeds.
 			ets:insert(UserTable, {UserId, FirstName, LastName, alive}),
 			set_user_membership(GtU, UtG, Groups, UserId), ok;
-		{delete, [alive]} ->
+		{delete, alive} ->
 			ets:insert(UserTable, {UserId, FirstName, LastName, dead}),
 			set_user_membership(GtU, UtG, Groups, UserId), ok;
 		{delete, _} ->

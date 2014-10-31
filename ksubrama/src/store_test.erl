@@ -1,8 +1,8 @@
 -module(store_test).
 -include_lib("eunit/include/eunit.hrl").
 
--define(NONEXISTENT,<<"nonexistent">>).
-
+-define(NONEXISTENT, <<"nonexistent">>).
+-define(CLIQUE, <<"clique">>).
 
 test_strs() ->
 	[
@@ -87,7 +87,8 @@ store_groups_test() ->
 	?debugMsg("Assuming users work, update groups with users."),
 	lists:foreach(
 		fun(Group) ->
-			ok = store:create_user(Pid, {Group, Group, Group, [Group]})
+			ok = store:create_user(Pid, {Group, Group, Group, [Group]}),
+			true = store:user_exists(Pid, Group)
 		end, test_strs()),
 
 	?debugMsg("Groups now exist and have members."),
@@ -101,7 +102,8 @@ store_groups_test() ->
 	lists:foreach(
 		fun(Group) ->
 			conflict = store:create_group(Pid, {Group, [Group]}),
-			true = store:group_exists(Pid, Group)
+			true = store:group_exists(Pid, Group),
+			ok = store:update_group(Pid, {Group, [Group]})
 		end, test_strs()),
 
 	?debugMsg("Groups can't be updated/recreated to invalid values."),
@@ -115,7 +117,7 @@ store_groups_test() ->
 			true = store:group_exists(Pid, Group)
 		end, test_strs()),
 
-	?debugMsg("Groups can now be deleted but only once."),
+	?debugMsg("Groups can now be deleted but only once unless they are recreated."),
 	lists:foreach(
 		fun(Group) ->
 			ok = store:delete_group(Pid, Group),
@@ -131,12 +133,87 @@ store_groups_test() ->
 			true = store:group_exists(Pid, Group)
 		end, test_strs()),
 
+	?debugMsg("Assuming users work, Groups can't be created using deleted users."),
+	lists:foreach(
+		fun(Group) ->
+			true = store:user_exists(Pid, Group),
+			{Group, Group, Group, [Group]} = store:get_user(Pid, Group),
+			ok = store:delete_user(Pid, Group),
+			false = store:group_exists(Pid, Group),
+			invalid_user = store:create_group(Pid, {Group, [Group]})
+		end, test_strs()),
+
 	exit(Pid, kill).
 
 
 store_users_test() ->
 	Pid = start_store(),
 
+	?debugMsg("Can't delete non-existent users."),
+	lists:foreach(
+		fun(UserId) ->
+			notfound = store:delete_user(Pid, UserId)
+		end, test_strs()),
+
+	?debugMsg("Add loner users."),
+	lists:foreach(
+		fun(UserId) ->
+			ok = store:create_user(Pid, {UserId, UserId, UserId, []}),
+			ok = store:update_user(Pid, {UserId, UserId, UserId, []})
+		end, test_strs()),
+
+	?debugMsg("Assuming groups work, create a group with our users"),
+	ok = store:create_group(Pid, {?CLIQUE, test_strs()}),
+
+	?debugMsg("Users should now be in groups."),
+	lists:foreach(
+		fun(UserId) ->
+			{UserId, UserId, UserId, [?CLIQUE]} = store:get_user(Pid, UserId),
+			true = store:user_exists(Pid, UserId)
+		end, test_strs()),
+
+	?debugMsg("Users can't be recreated, but they can be updated."),
+	lists:foreach(
+		fun(UserId) ->
+			conflict = store:create_user(Pid, {UserId, <<>>, <<>>, [UserId]}),
+			true = store:user_exists(Pid, UserId),
+			ok = store:update_user(Pid, {UserId, <<>>, <<>>, [UserId, ?CLIQUE]})
+		end, test_strs()),
+
+	?debugMsg("User groups should now be dynamically available."),
+	lists:foreach(
+		fun(UserId) ->
+			{UserId, [UserId]} = store:get_group(Pid, UserId),
+			true = store:user_exists(Pid, UserId)
+		end, test_strs()),
+	Tstr = test_strs(),
+	{?CLIQUE, Tstr} = store:get_group(Pid, ?CLIQUE),
+	true = store:group_exists(Pid, ?CLIQUE),
+
+	?debugMsg("Users can now be deleted but only once."),
+	lists:foreach(
+		fun(UserId) ->
+			ok = store:delete_user(Pid, UserId),
+			notfound = store:get_user(Pid, UserId),
+			false = store:user_exists(Pid, UserId),
+			notfound = store:delete_user(Pid, UserId)
+		end, test_strs()),
+
+	?debugMsg("Deleted users cannot be recreated."),
+	lists:foreach(
+		fun(UserId) ->
+			conflict = store:create_user(Pid, {UserId, UserId, UserId, [UserId]}),
+			conflict = store:create_user(Pid, {UserId, UserId, UserId, [UserId]})
+		end, test_strs()),
+
+	?debugMsg("Deleted users have no group membership."),
+	lists:foreach(
+		fun(UserId) ->
+			notfound = store:get_group(Pid, UserId),
+			false = store:group_exists(Pid, UserId)
+		end, test_strs()),
+	notfound = store:get_group(Pid, ?CLIQUE),
+	false = store:group_exists(Pid, ?CLIQUE),
 
 	exit(Pid, kill).
 
