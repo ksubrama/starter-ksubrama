@@ -1,6 +1,6 @@
 -module(groups_handler).
 
--export([init/3]).
+-export([init/3, rest_init/2]).
 -export([allowed_methods/2]).
 -export([allow_missing_post/2]).
 -export([content_types_accepted/2]).
@@ -42,6 +42,11 @@
 init({tcp, http}, _Req, _Opts) ->
 	{upgrade, protocol, cowboy_rest}.
 
+rest_init(Req, _Opts) ->
+	{Group, Req1} = cowboy_req:binding(group, Req),
+	Pid = whereis(store),
+	{ok, Req1, {Pid, Group}}.
+
 allowed_methods(Req, State) ->
 	{ [<<"GET">>, <<"POST">>, <<"PUT">>, <<"DELETE">>],
 		Req, State}.
@@ -61,18 +66,53 @@ content_types_provided(Req, State) ->
 		{<<"application/json">>, group_to_json}
 	], Req, State}.
 
-delete_resource(Req, State) ->
-	%% TODO: Fill in the logic.
-	{false, Req, State}.
-
-resource_exists(Req, State) ->
-	%% TODO: Fill with logic.
+delete_resource(Req, State = {Pid, Group}) ->
+	io:format("Deleting ~p~n", [Group]),
+	store:delete_group(Pid, Group),
+	%% Well..  either the resource was deleted, or got deleted in between the
+	%% check earlier and now.  No harm in claiming that the resource got deleted.
 	{true, Req, State}.
 
-group_from_json(Req, State) ->
-	%% TODO: Fill with logic.
-	{true, Req, State}.
+resource_exists(Req, State = {Pid, Group}) ->
+	{store:group_exists(Pid, Group), Req, State}.
 
-group_to_json(Req, State) ->
-	%% TODO: Fill with logic.
-	{<<"[]">>, Req, State}.
+group_from_json(Req, State = {Pid, Group}) ->
+	{ok, Body, Req1} = cowboy_req:body(Req),
+	{Method, Req2} = cowboy_req:method(Req1),
+	io:format("[~s] against ~p~n", [Method, Group]),
+	try
+		jsx:is_json(Body) orelse throw({decode, Body}),
+		UserIds = jsx:decode(Body),
+		ok = ej:valid(com_handler:spec_for(group), UserIds),
+		{Regex, _} = com_handler:regex_for(id),
+		{match, _} = re:run(Group, Regex),
+
+		io:format("Inserting/Updating: ~p~n", [Group]),
+		ok = case Method of
+			<<"POST">> ->
+				store:create_group(Pid, {Group, UserIds});
+			<<"PUT">> ->
+				store:update_group(Pid, {Group, UserIds});
+			_ -> throw({unknown_verb, Method})
+		end,
+		{true, Req2, State}
+	catch
+		error:Msg ->
+			io:format("Error ~p during [~s]~n", [Msg, Method]),
+			{false, Req2, State};
+		throw:Msg ->
+			io:format("Error ~p during [~s]~n", [Msg, Method]),
+			{false, Req2, State}
+	end.
+
+group_to_json(Req, State = {Pid, Group}) ->
+	io:format("Fetching ~p~n", [Group]),
+	case store:get_group(Pid, Group) of
+		notfound ->
+			{ok, Req1} = cowboy_req:reply(404, Req),
+			{halt, Req1, State};
+		{Group, UserIds} ->
+			ok = ej:valid(com_handler:spec_for(group), UserIds),
+			Body = jsx:encode(UserIds),
+			{Body, Req, State}
+	end.

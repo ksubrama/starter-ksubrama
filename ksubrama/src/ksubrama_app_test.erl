@@ -33,7 +33,7 @@ jsx_test() ->
 		end, Inputs).
 
 %% Do these two work together?
-ej_test() ->
+ej_user_test() ->
 	ValidJson = <<"{
     \"userid\": \"hello\",
     \"first_name\": \"Herb\",
@@ -54,3 +54,12 @@ ej_test() ->
 		end,
 		[<<"userid">>, <<"first_name">>, <<"last_name">>, <<"groups">>]).
 
+ej_group_test() ->
+	ValidJson = <<"[
+    \"plant\",
+    \"springville\"
+  ]">>,
+	?debugFmt("Original json: ~s", [ValidJson]),
+	Decoded = jsx:decode(ValidJson),
+	?debugFmt("Decoded json: ~p", [Decoded]),
+	ok = ej:valid(com_handler:spec_for(group), Decoded).

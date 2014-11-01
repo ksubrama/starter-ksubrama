@@ -13,8 +13,8 @@ start(_StartType, _StartArgs) ->
 	% TODO: Come back and add constraint handlers here if we need to
 	% pre-validate our user/group names in some way.
 	RouteList = [
-		{"/users/[:userid]", users_handler, []},
-		{"/groups/[:group]", groups_handler, []}
+		{"/users/:userid", users_handler, []},
+		{"/groups/:group", groups_handler, []}
 	],
 	Dispatch = cowboy_router:compile([{'_', RouteList}]),
 	% TODO: Learn what the default "max" values are and how cowboy offers

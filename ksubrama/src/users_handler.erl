@@ -114,16 +114,14 @@ user_from_json(Req, State = {Pid, UserId}) ->
 	{Method, Req2} = cowboy_req:method(Req1),
 	io:format("[~s] against ~p~n", [Method, UserId]),
 	try
-		jsx:is_json(Body) orelse throw({error, decode}),
-		io:format("~s", [Body]),
+		jsx:is_json(Body) orelse throw({decode, Body}),
 		DecodedJson = {jsx:decode(Body)},
-		io:format("~p", [DecodedJson]),
 		ok = ej:valid(com_handler:spec_for(user), DecodedJson),
 		FirstName = ej:get({"first_name"}, DecodedJson),
 		LastName = ej:get({"last_name"}, DecodedJson),
 		UserId_ = ej:get({"userid"}, DecodedJson),
 		Groups = ej:get({"groups"}, DecodedJson),
-		UserId_ =:= UserId orelse throw({error, userid_mismatch}),
+		UserId_ =:= UserId orelse throw({userid_mismatch, UserId_}),
 
 		User = {UserId, FirstName, LastName, Groups},
 		io:format("Inserting/Updating: ~p~n", [User]),
@@ -132,7 +130,7 @@ user_from_json(Req, State = {Pid, UserId}) ->
 				store:create_user(Pid, User);
 			<<"PUT">> ->
 				store:update_user(Pid, User);
-			_ -> throw({error, unknown_verb})
+			_ -> throw({unknown_verb, Method})
 		end,
 		{true, Req2, State}
 	catch
@@ -157,6 +155,7 @@ user_to_json(Req, State = {Pid, UserId}) ->
 				{<<"userid">>, UserId},
 				{<<"groups">>, Groups}
 			],
+			ok = ej:valid(com_handler:spec_for(user), {DecodedJson}),
 			Body = jsx:encode(DecodedJson),
 			{Body, Req, State}
 	end.
