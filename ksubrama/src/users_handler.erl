@@ -115,8 +115,10 @@ user_from_json(Req, State = {Pid, UserId}) ->
 	io:format("[~s] against ~p~n", [Method, UserId]),
 	try
 		jsx:is_json(Body) orelse throw({error, decode}),
-		DecodedJson = jsx:decode(Body),
-		ej:valid(com_handler:spec_for(user), DecodedJson) =:= ok orelse throw({error, json_spec}),
+		io:format("~s", [Body]),
+		DecodedJson = {jsx:decode(Body)},
+		io:format("~p", [DecodedJson]),
+		ok = ej:valid(com_handler:spec_for(user), DecodedJson),
 		FirstName = ej:get({"first_name"}, DecodedJson),
 		LastName = ej:get({"last_name"}, DecodedJson),
 		UserId_ = ej:get({"userid"}, DecodedJson),
@@ -125,17 +127,19 @@ user_from_json(Req, State = {Pid, UserId}) ->
 
 		User = {UserId, FirstName, LastName, Groups},
 		io:format("Inserting/Updating: ~p~n", [User]),
-		Outcome = case Method of
+		ok = case Method of
 			<<"POST">> ->
 				store:create_user(Pid, User);
 			<<"PUT">> ->
 				store:update_user(Pid, User);
 			_ -> throw({error, unknown_verb})
 		end,
-		Outcome =:= ok orelse throw({error, Outcome}),
 		{true, Req2, State}
 	catch
 		error:Msg ->
+			io:format("Error ~p during [~s]~n", [Msg, Method]),
+			{false, Req2, State};
+		throw:Msg ->
 			io:format("Error ~p during [~s]~n", [Msg, Method]),
 			{false, Req2, State}
 	end.

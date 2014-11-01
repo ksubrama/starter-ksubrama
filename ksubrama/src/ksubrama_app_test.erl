@@ -32,3 +32,25 @@ jsx_test() ->
 			?debugFmt("Decoded: ~p", [Decoded])
 		end, Inputs).
 
+%% Do these two work together?
+ej_test() ->
+	ValidJson = <<"{
+    \"userid\": \"hello\",
+    \"first_name\": \"Herb\",
+    \"last_name\": \"Ello\",
+    \"groups\": [
+        \"plant\",
+        \"springville\"
+    ]
+  }">>,
+	?debugFmt("Original json: ~s", [ValidJson]),
+	Decoded = {jsx:decode(ValidJson)},
+	?debugFmt("Decoded json: ~p", [Decoded]),
+	ok = ej:valid(com_handler:spec_for(user), Decoded),
+	lists:foreach(
+		fun(Field) ->
+			Extracted = ej:get({Field}, Decoded),
+			?debugFmt("~s = ~p~n", [Field, Extracted])
+		end,
+		[<<"userid">>, <<"first_name">>, <<"last_name">>, <<"groups">>]).
+
