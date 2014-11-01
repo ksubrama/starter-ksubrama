@@ -133,7 +133,7 @@ init([]) ->
 	{ok, State}.
 
 
--spec maybe_lookup(ets:tid(), term(), pos_integer()) -> [term()].
+-spec maybe_lookup(ets:tid(), term(), pos_integer()) -> [term()] | term().
 maybe_lookup(Tab, Key, Pos) ->
 	try
 		ets:lookup_element(Tab, Key, Pos)

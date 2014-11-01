@@ -111,11 +111,12 @@ resource_exists(Req, State = {Pid, UserId}) ->
 
 user_from_json(Req, State = {Pid, UserId}) ->
 	{ok, Body, Req1} = cowboy_req:body(Req),
-	io:format("POST/PUT against ~p~n", [UserId]),
+	{Method, Req2} = cowboy_req:method(Req1),
+	io:format("[~s] against ~p~n", [Method, UserId]),
 	try
 		jsx:is_json(Body) orelse throw({error, decode}),
 		DecodedJson = jsx:decode(Body),
-		ej:valid(DecodedJson) =:= ok orelse throw({error, json_spec}),
+		ej:valid(com_handler:spec_for(user), DecodedJson) =:= ok orelse throw({error, json_spec}),
 		FirstName = ej:get({"first_name"}, DecodedJson),
 		LastName = ej:get({"last_name"}, DecodedJson),
 		UserId_ = ej:get({"userid"}, DecodedJson),
@@ -124,7 +125,7 @@ user_from_json(Req, State = {Pid, UserId}) ->
 
 		User = {UserId, FirstName, LastName, Groups},
 		io:format("Inserting/Updating: ~p~n", [User]),
-		Outcome = case Method = cowboy_req:method(Req) of
+		Outcome = case Method of
 			<<"POST">> ->
 				store:create_user(Pid, User);
 			<<"PUT">> ->
@@ -132,11 +133,11 @@ user_from_json(Req, State = {Pid, UserId}) ->
 			_ -> throw({error, unknown_verb})
 		end,
 		Outcome =:= ok orelse throw({error, Outcome}),
-		{true, Req1, State}
+		{true, Req2, State}
 	catch
 		error:Msg ->
-			io:format("Error ~p during PUT/POST~n", [Msg]),
-			{false, Req1, State}
+			io:format("Error ~p during [~s]~n", [Msg, Method]),
+			{false, Req2, State}
 	end.
 
 user_to_json(Req, State = {Pid, UserId}) ->
@@ -146,12 +147,12 @@ user_to_json(Req, State = {Pid, UserId}) ->
 			{ok, Req1} = cowboy_req:reply(404, Req),
 			{halt, Req1, State};
 		{UserId, FirstName, LastName, Groups} ->
-			DecodedJson = {[
+			DecodedJson = [
 				{<<"first_name">>, FirstName},
 				{<<"last_name">>, LastName},
 				{<<"userid">>, UserId},
 				{<<"groups">>, Groups}
-			]},
+			],
 			Body = jsx:encode(DecodedJson),
 			{Body, Req, State}
 	end.
