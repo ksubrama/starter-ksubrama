@@ -56,7 +56,7 @@
 
 start_link() ->
 	io:format("Starting storage subsystem.~n"),
-	gen_server:start_link(?MODULE, [], []).
+	gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 
 %% User CRUD.

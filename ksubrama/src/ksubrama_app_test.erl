@@ -7,6 +7,10 @@
 startup_test() ->
 	{ok, Started} = application:ensure_all_started(ksubrama),
 	?assertNot(undefined == whereis(ksubrama_sup)),
+	% Can we reach the storage system.
+	Pid = whereis(store),
+	?assertNot(undefined == Pid),
+	ok = store:create_user(Pid, {<<>>, <<>>, <<>>, []}),
 	lists:foreach(fun(App) ->
 			ok = application:stop(App)
 		end, Started).
@@ -27,3 +31,4 @@ jsx_test() ->
 			Decoded = jsx:decode(Encoded),
 			?debugFmt("Decoded: ~p", [Decoded])
 		end, Inputs).
+

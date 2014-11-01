@@ -1,6 +1,6 @@
 -module(users_handler).
 
--export([init/3]).
+-export([init/3, rest_init/2]).
 -export([allowed_methods/2]).
 -export([allow_missing_post/2]).
 -export([content_types_accepted/2]).
@@ -49,7 +49,7 @@
 %% Actually, we should do no such thing because that's crypto and we'd have to
 %% be high and insane to even contemplate implementing that on our own - so we
 %% should instead hook up the oauth libraries, hire some pen-testers, sacrifice a
-%% chicken to the spirit of Bruce Schnier and develop and drinking problem.
+%% chicken to the spirit of Bruce Schneier and develop and drinking problem.
 %%
 %% There are a couple other minor design concerns.  Both the user and group
 %% objects would benefit from a "link" field with urls to the corresponding
@@ -61,6 +61,24 @@
 
 init({tcp, http}, _Req, _Opts) ->
 	{upgrade, protocol, cowboy_rest}.
+
+rest_init(Req, _Opts) ->
+	% Once I figure out logging, add a log at every rest_init to correctly write
+	% down what the request is, the http verb is, strip out any PII and store it
+	% for telemetry and auditing.
+	% Also, formalize the state here.  I'm just passing a tuple around.  There needs
+	% to be a proper "request context" that can trace the performance and activity
+	% within the context of this request.
+	{UserId, Req1} = cowboy_req:binding(userid, Req),
+	% TODO: There is probably a better way of "knowing" the module you're supposed
+	% to talk to but I don't care to go read a bunch of cowboy documentation to
+	% figure out the right way to get this here.
+	% Also...  if the memory subsystem fails, I'm a-ok with just "letting it crash"
+	% but that means figuring out exactly how cowboy is going to handle that.  I hope
+	% it just returns a 500 or, at worst, closes the connection and starts again.
+	% Maybe??
+	Pid = whereis(store),
+	{ok, Req1, {Pid, UserId}}.
 
 allowed_methods(Req, State) ->
 	{ [<<"GET">>, <<"POST">>, <<"PUT">>, <<"DELETE">>],
@@ -81,18 +99,59 @@ content_types_provided(Req, State) ->
 		{<<"application/json">>, user_to_json}
 	], Req, State}.
 
-delete_resource(Req, State) ->
-	%% TODO: Fill in the logic.
-	{false, Req, State}.
-
-resource_exists(Req, State) ->
-	%% TODO: Fill with logic.
+delete_resource(Req, State = {Pid, UserId}) ->
+	io:format("Deleting ~p~n", [UserId]),
+	store:delete_user(Pid, UserId),
+	%% Well..  either the resource was deleted, or got deleted in between the
+	%% check earlier and now.  No harm in claiming that the resource got deleted.
 	{true, Req, State}.
 
-user_from_json(Req, State) ->
-	%% TODO: Fill with logic.
-	{true, Req, State}.
+resource_exists(Req, State = {Pid, UserId}) ->
+	{store:user_exists(Pid, UserId), Req, State}.
 
-user_to_json(Req, State) ->
-	%% TODO: Fill with logic.
-	{<<"Something">>, Req, State}.
+user_from_json(Req, State = {Pid, UserId}) ->
+	{ok, Body, Req1} = cowboy_req:body(Req),
+	io:format("POST/PUT against ~p~n", [UserId]),
+	try
+		jsx:is_json(Body) orelse throw({error, decode}),
+		DecodedJson = jsx:decode(Body),
+		ej:valid(DecodedJson) =:= ok orelse throw({error, json_spec}),
+		FirstName = ej:get({"first_name"}, DecodedJson),
+		LastName = ej:get({"last_name"}, DecodedJson),
+		UserId_ = ej:get({"userid"}, DecodedJson),
+		Groups = ej:get({"groups"}, DecodedJson),
+		UserId_ =:= UserId orelse throw({error, userid_mismatch}),
+
+		User = {UserId, FirstName, LastName, Groups},
+		io:format("Inserting/Updating: ~p~n", [User]),
+		Outcome = case Method = cowboy_req:method(Req) of
+			<<"POST">> ->
+				store:create_user(Pid, User);
+			<<"PUT">> ->
+				store:update_user(Pid, User);
+			_ -> throw({error, unknown_verb})
+		end,
+		Outcome =:= ok orelse throw({error, Outcome}),
+		{true, Req1, State}
+	catch
+		error:Msg ->
+			io:format("Error ~p during PUT/POST~n", [Msg]),
+			{false, Req1, State}
+	end.
+
+user_to_json(Req, State = {Pid, UserId}) ->
+	io:format("Fetching ~p~n", [UserId]),
+	case store:get_user(Pid, UserId) of
+		notfound ->
+			{ok, Req1} = cowboy_req:reply(404, Req),
+			{halt, Req1, State};
+		{UserId, FirstName, LastName, Groups} ->
+			DecodedJson = {[
+				{<<"first_name">>, FirstName},
+				{<<"last_name">>, LastName},
+				{<<"userid">>, UserId},
+				{<<"groups">>, Groups}
+			]},
+			Body = jsx:encode(DecodedJson),
+			{Body, Req, State}
+	end.
