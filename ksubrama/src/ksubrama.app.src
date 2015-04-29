@@ -1,0 +1,14 @@
+{application, ksubrama, [
+	{description, "Kartik Cating-Subramanian starter project."},
+	{vsn, "1"},
+	{registered, [ksubrama_sup, store]},
+	{applications, [
+		cowboy,
+		ej,
+		jsx,
+		kernel,
+		stdlib
+	]},
+	{mod, { ksubrama_app, []}},
+	{env, []}
+]}.
